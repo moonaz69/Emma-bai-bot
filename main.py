@@ -2,7 +2,6 @@ import os
 import sys
 import logging
 from datetime import datetime
-import pytz
 import openai
 
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -15,35 +14,29 @@ from telegram.ext import (
     ConversationHandler,
 )
 
-# ─── Logging ───────────────────────────────────────────────────────────────────
+# ─── Logging setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ─── Tokens ────────────────────────────────────────────────────────────────────
+# ─── Load token ─────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-openai.api_key = OPENAI_API_KEY
-
 if not TELEGRAM_TOKEN:
     logger.error("❌ TELEGRAM_TOKEN is not set! Exiting.")
     sys.exit(1)
 
-# ─── Timezone ──────────────────────────────────────────────────────────────────
-BAKU_TZ = pytz.timezone("Asia/Baku")
-
 # ─── Conversation states ───────────────────────────────────────────────────────
-MENU, CALL_DELAY = range(2)
+MENU, REMIND_DELAY, REMIND_TEXT = range(3)
 
 # ─── Handlers ──────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я твой личный ассистент. Используй /menu для начала."
+        "Привет! Я твой личный ассистент. Используй /menu для настройки напоминания."
     )
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["Перезвонить по аудио"]]
+    keyboard = [["Напоминания"]]
     await update.message.reply_text(
         "Выберите опцию:",
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
@@ -51,45 +44,55 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MENU
 
 async def menu_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    choice = update.message.text
-    if choice == "Перезвонить по аудио":
+    if update.message.text == "Напоминания":
         await update.message.reply_text(
-            "Через сколько напомнить? Введите MM:SS", reply_markup=ReplyKeyboardRemove()
+            "Через какое время напомнить? Введите задержку HH:MM:SS", reply_markup=ReplyKeyboardRemove()
         )
-        return CALL_DELAY
-    await update.message.reply_text("Пожалуйста, выберите опцию из меню.")
+        return REMIND_DELAY
+    await update.message.reply_text("Пожалуйста, выберите пункт меню.")
     return MENU
 
-async def schedule_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def remind_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     try:
-        parts = text.split(":")
-        minutes = int(parts[0])
-        seconds = int(parts[1]) if len(parts) > 1 else 0
-        delay = minutes * 60 + seconds
+        h, m, s = map(int, text.split(':'))
+        delay = h * 3600 + m * 60 + s
     except Exception:
         await update.message.reply_text(
-            "❌ Неверный формат. Используй MM:SS, например '01:00' для одной минуты."
+            "❌ Неверный формат. Введите HH:MM:SS, например 01:00:00 для часа."
         )
-        return CALL_DELAY
+        return REMIND_DELAY
+    context.user_data['delay'] = delay
+    await update.message.reply_text("Введите текст напоминания:")
+    return REMIND_TEXT
 
+async def remind_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    delay = context.user_data.get('delay', 0)
+    # Schedule one-off reminder
     context.job_queue.run_once(
-        callback_call,
+        reminder_callback,
         when=delay,
         chat_id=update.effective_chat.id,
-        name=f"call_{update.effective_chat.id}_{int(datetime.now().timestamp())}",
+        data=text,
+        name=f"remind_{update.effective_chat.id}_{int(datetime.now().timestamp())}",
     )
-    await update.message.reply_text(f"✅ Звонок запланирован через {minutes:02d}:{seconds:02d}.")
+    # Формат задержки для сообщения
+    h = delay // 3600
+    m = (delay % 3600) // 60
+    s = delay % 60
+    await update.message.reply_text(
+        f"✅ Напоминание через {h:02d}:{m:02d}:{s:02d} установлено: {text}"
+    )
     return ConversationHandler.END
 
-async def callback_call(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.chat_id
-    # Здесь можно отправить настоящий voice, а пока просто текст
-    await context.bot.send_message(chat_id, "📞 Звоню вам (имитация аудиозвонка)...")
+async def reminder_callback(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    await context.bot.send_message(job.chat_id, f"🔔 Напоминание: {job.data}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Меню отменено.", reply_markup=ReplyKeyboardRemove()
+        "Операция отменена.", reply_markup=ReplyKeyboardRemove()
     )
     return ConversationHandler.END
 
@@ -97,15 +100,20 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+    # Основные команды
+    app.add_handler(CommandHandler("start", start))
+
+    # ConversationHandler для меню напоминаний
     conv = ConversationHandler(
         entry_points=[CommandHandler("menu", menu)],
         states={
             MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, menu_choice)],
-            CALL_DELAY: [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_call)],
+            REMIND_DELAY: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_delay)],
+            REMIND_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, remind_text)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
-    app.add_handler(CommandHandler("start", start))
     app.add_handler(conv)
 
+    # Запуск бота
     app.run_polling()
