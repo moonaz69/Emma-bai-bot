@@ -28,20 +28,37 @@ openai.api_key = OPENAI_API_KEY
 BAKU_TZ = pytz.timezone("Asia/Baku")
 
 
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Я твой личный ассистент. /help — список команд.")
 
 
+# /help
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
+        "/time — показать текущее время (системное, UTC, Baku)\n"
         "/remind HH:MM текст — напоминать каждый день\n"
-        "/remind after N second текст — однократно через N секунд\n"
-        "/schedule YYYY-MM-DD HH:MM текст — однократно в дату/время\n"
+        "/remind after N second текст — через N секунд\n"
+        "/schedule YYYY-MM-DD HH:MM текст — один раз в дату/время\n"
         "/calc выражение — вычислить\n"
         "Просто напиши текст — отвечу через AI."
     )
 
 
+# /time
+async def time_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    now_system = datetime.now()  # системное (без tzinfo)
+    now_utc = datetime.now(pytz.UTC)
+    now_baku = now_utc.astimezone(BAKU_TZ)
+    reply = (
+        f"🕒 System time: {now_system.strftime('%Y-%m-%d %H:%M:%S')} ({now_system.tzinfo})\n"
+        f"🕒 UTC       : {now_utc.strftime('%Y-%m-%d %H:%M:%S')} (UTC)\n"
+        f"🕒 Baku time : {now_baku.strftime('%Y-%m-%d %H:%M:%S')} (Asia/Baku)"
+    )
+    await update.message.reply_text(reply)
+
+
+# /calc
 async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     expr = update.message.text.partition(" ")[2]
     try:
@@ -51,25 +68,24 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Ошибка вычисления: {e}")
 
 
-# общий callback для всех напоминаний
+# общий callback для напоминаний
 async def reminder_callback(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     await context.bot.send_message(job.chat_id, job.data)
 
 
-# расширённый /remind
+# /remind
 async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = update.message.text.split(" ", 4)
-
-    # вариант: /remind after N second текст
     if len(parts) >= 4 and parts[1].lower() == "after":
+        # после N секунд
         try:
             seconds = int(parts[2])
+            text = parts[3] if len(parts) == 4 else parts[4]
         except ValueError:
             return await update.message.reply_text(
-                "Неправильный формат. Используй /remind after <секунд> <текст>"
+                "Используй /remind after <секунд> <текст>"
             )
-        text = parts[4] if len(parts) == 5 else ""
         context.job_queue.run_once(
             reminder_callback,
             when=seconds,
@@ -81,7 +97,7 @@ async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Напоминание через {seconds} секунд установлено: «{text}»"
         )
 
-    # вариант: /remind HH:MM текст (ежедневно)
+    # ежедневное в HH:MM
     try:
         _, time_str, text = update.message.text.split(" ", 2)
         hh, mm = map(int, time_str.split(":"))
@@ -94,16 +110,16 @@ async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name=f"daily_{update.effective_chat.id}_{hh}_{mm}",
         )
         return await update.message.reply_text(
-            f"Ежедневное напоминание установлено в {time_str} (Baku time)"
+            f"Ежедневное напоминание в {time_str} (Baku time)"
         )
     except Exception:
         return await update.message.reply_text(
-            "Неправильный формат. Используй /remind HH:MM <текст> или /remind after <секунд> <текст>"
+            "Неправильный формат. /remind HH:MM <текст> или /remind after <секунд> <текст>"
         )
 
 
+# /schedule — разово
 async def schedule_once(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # /schedule YYYY-MM-DD HH:MM текст
     _, date_str, time_str, text = update.message.text.split(" ", 3)
     dt_naive = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
     dt = BAKU_TZ.localize(dt_naive)
@@ -115,27 +131,27 @@ async def schedule_once(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name=f"once_{update.effective_chat.id}_{int(dt.timestamp())}",
     )
     await update.message.reply_text(
-        f"Однократное напоминание запланировано на {date_str} {time_str} (Baku time)"
+        f"Запланировано на {date_str} {time_str} (Baku time)"
     )
 
 
+# AI-ответы
 async def ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = update.message.text
     resp = openai.ChatCompletion.create(
         model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}]
     )
-    answer = resp.choices[0].message.content
-    await update.message.reply_text(answer)
+    await update.message.reply_text(resp.choices[0].message.content)
 
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+    # регистрируем команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("time", time_command))
     app.add_handler(CommandHandler("calc", calc))
     app.add_handler(CommandHandler("remind", remind))
     app.add_handler(CommandHandler("schedule", schedule_once))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_response))
-
-    app.run_polling()
