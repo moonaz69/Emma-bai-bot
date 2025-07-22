@@ -1,7 +1,7 @@
 import os
 import sys
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 import openai
 
@@ -15,20 +15,20 @@ from telegram.ext import (
     ConversationHandler,
 )
 
-# ─── Logging setup ─────────────────────────────────────────────────────────────
+# ─── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ─── Load tokens ────────────────────────────────────────────────────────────────
+# ─── Tokens ────────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai.api_key = OPENAI_API_KEY
 
 if not TELEGRAM_TOKEN:
     logger.error("❌ TELEGRAM_TOKEN is not set! Exiting.")
     sys.exit(1)
-openai.api_key = OPENAI_API_KEY
 
 # ─── Timezone ──────────────────────────────────────────────────────────────────
 BAKU_TZ = pytz.timezone("Asia/Baku")
@@ -46,7 +46,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["Перезвонить по аудио"]]
     await update.message.reply_text(
         "Выберите опцию:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
     )
     return MENU
 
@@ -63,28 +63,28 @@ async def menu_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def schedule_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     try:
-        parts = text.split(':')
+        parts = text.split(":")
         minutes = int(parts[0])
         seconds = int(parts[1]) if len(parts) > 1 else 0
-n        delay = minutes * 60 + seconds
+        delay = minutes * 60 + seconds
     except Exception:
         await update.message.reply_text(
-            "Неверный формат. Используй MM:SS, например 01:00 для одной минуты."
+            "❌ Неверный формат. Используй MM:SS, например '01:00' для одной минуты."
         )
         return CALL_DELAY
-    # Schedule job
+
     context.job_queue.run_once(
         callback_call,
         when=delay,
         chat_id=update.effective_chat.id,
-        name=f"call_{update.effective_chat.id}_{int(datetime.now().timestamp())}"
+        name=f"call_{update.effective_chat.id}_{int(datetime.now().timestamp())}",
     )
-    await update.message.reply_text(f"Запланирован звонок через {minutes:02d}:{seconds:02d}.")
+    await update.message.reply_text(f"✅ Звонок запланирован через {minutes:02d}:{seconds:02d}.")
     return ConversationHandler.END
 
 async def callback_call(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
-    # Simulate audio call by sending a voice message or text
+    # Здесь можно отправить настоящий voice, а пока просто текст
     await context.bot.send_message(chat_id, "📞 Звоню вам (имитация аудиозвонка)...")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
