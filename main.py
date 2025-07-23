@@ -12,7 +12,8 @@ from telegram.ext import (
     ConversationHandler,
 )
 
-from gdrive import upload_file_bytes  # <-- наш новый импорт
+import openai
+from gdrive import upload_file_bytes  # <-- импорт для Google Drive
 
 # ─── Logging setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -20,15 +21,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ─── Load token & Drive folder ID ─────────────────────────────────────────────
+# ─── Load tokens & keys ────────────────────────────────────────────────────────
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 DRIVE_FOLDER_ID  = os.getenv("DRIVE_FOLDER_ID")
+OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
+
 if not TELEGRAM_TOKEN:
     logger.error("❌ TELEGRAM_TOKEN is not set! Exiting.")
     sys.exit(1)
 if not DRIVE_FOLDER_ID:
     logger.error("❌ DRIVE_FOLDER_ID is not set! Exiting.")
     sys.exit(1)
+if not OPENAI_API_KEY:
+    logger.error("❌ OPENAI_API_KEY is not set! Exiting.")
+    sys.exit(1)
+
+openai.api_key = OPENAI_API_KEY
 
 # ─── Conversation states ───────────────────────────────────────────────────────
 MENU, REMIND_DELAY, REMIND_TEXT = range(3)
@@ -36,8 +44,8 @@ MENU, REMIND_DELAY, REMIND_TEXT = range(3)
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 def save_reminders_list(chat_id: int, reminders: list[str]) -> str:
     """
-    Собирает список строк reminders и заливает его в текстовый файл
-    reminders_<chat_id>.txt в папку DRIVE_FOLDER_ID, возвращая webViewLink.
+    Собирает список строк reminders и заливает его в файл
+    reminders_<chat_id>.txt на Google Drive. Возвращает webViewLink.
     """
     content = "\n".join(reminders).encode("utf-8")
     filename = f"reminders_{chat_id}.txt"
@@ -60,6 +68,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def menu_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+
     if text == "Напоминания":
         await update.message.reply_text(
             "Через какое время напомнить? Введите задержку в формате HH:MM:SS",
@@ -68,7 +77,6 @@ async def menu_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return REMIND_DELAY
 
     if text == "Мои напоминания":
-        # собираем текущие отложенные задачи из context.job_queue или chat_data
         jobs = context.chat_data.get("jobs", [])
         if not jobs:
             await update.message.reply_text("У вас нет активных напоминаний.")
@@ -88,7 +96,7 @@ async def remind_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         delay = h * 3600 + m * 60 + s
     except Exception:
         await update.message.reply_text(
-            "❌ Неверный формат. Введите задержку HH:MM:SS, например 01:00:00 для часа."
+            "❌ Неверный формат. Введите HH:MM:SS, например 01:00:00 для часа."
         )
         return REMIND_DELAY
 
@@ -100,7 +108,7 @@ async def remind_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     delay = context.user_data.get("delay", 0)
 
-    # сохраняем в chat_data для возможности «Мои напоминания»
+    # сохраняем в chat_data для «Мои напоминания»
     job_record = {
         "time": str(datetime.now().time().replace(microsecond=0)),
         "text": text,
@@ -108,17 +116,15 @@ async def remind_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     context.chat_data.setdefault("jobs", []).append(job_record)
 
-    # планируем однократное напоминание
-    job_name = f"remind_{update.effective_chat.id}_{int(datetime.now().timestamp())}"
+    # планируем напоминание
     context.job_queue.run_once(
         reminder_callback,
         when=delay,
         chat_id=update.effective_chat.id,
         data=text,
-        name=job_name,
+        name=f"remind_{update.effective_chat.id}_{int(datetime.now().timestamp())}",
     )
 
-    # отвечаем пользователю
     h = delay // 3600
     m = (delay % 3600) // 60
     s = delay % 60
@@ -137,11 +143,31 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
+# ─── ChatGPT-обработчик ────────────────────────────────────────────────────────
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = update.message.text.partition(" ")[2].strip()
+    if not prompt:
+        await update.message.reply_text("❌ Пиши так: /chat <твой вопрос>")
+        return
+
+    try:
+        resp = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role":"user", "content": prompt}]
+        )
+        answer = resp.choices[0].message.content.strip()
+    except Exception as e:
+        answer = f"Ошибка OpenAI: {e}"
+
+    await update.message.reply_text(answer)
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+    # существующие хендлеры
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("chat", chat))        # <-- новый
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("menu", menu)],
