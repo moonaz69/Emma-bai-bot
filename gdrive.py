@@ -1,37 +1,38 @@
-# gdrive.py
-
 import os
 import io
-import json
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-# Читаем ключ из переменной окружения
-creds_info = json.loads(os.getenv("GOOGLE_CREDENTIALS_JSON"))
+# Читаем из ENV
+CLIENT_ID     = os.environ["GOOGLE_OAUTH_CLIENT_ID"]
+CLIENT_SECRET = os.environ["GOOGLE_OAUTH_CLIENT_SECRET"]
+REFRESH_TOKEN = os.environ["GOOGLE_OAUTH_REFRESH_TOKEN"]
+FOLDER_ID     = os.environ["DRIVE_FOLDER_ID"]  # добавьте эту переменную, если не сделали ранее
 
-SCOPES = ["https://www.googleapis.com/auth/drive"]
-creds = service_account.Credentials.from_service_account_info(
-    creds_info, scopes=SCOPES
-)
+SCOPES = ["https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/drive.metadata"]
 
-drive_service = build("drive", "v3", credentials=creds)
-
-def upload_file_local(filepath: str, folder_id: str) -> dict:
-    """
-    Загружает локальный файл в указанную папку на Google Drive.
-    Возвращает метаданные созданного файла (id, webViewLink).
-    """
-    file_metadata = {
-        "name": os.path.basename(filepath),
-        "parents": [folder_id],
-    }
-    media = MediaIoBaseUpload(
-        io.FileIO(filepath, "rb"), mimetype="application/octet-stream"
+def get_drive_service():
+    creds = Credentials(
+        token=None,
+        refresh_token=REFRESH_TOKEN,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        scopes=SCOPES
     )
-    created = (
-        drive_service.files()
-        .create(body=file_metadata, media_body=media, fields="id, webViewLink")
-        .execute()
-    )
+    return build("drive", "v3", credentials=creds)
+
+def upload_file_bytes(name: str, data_bytes: bytes) -> dict:
+    """
+    Заливает данные (bytes) как файл name в папку FOLDER_ID.
+    Возвращает метаданные созданного файла.
+    """
+    service = get_drive_service()
+    metadata = {"name": name, "parents": [FOLDER_ID]}
+    media = MediaIoBaseUpload(io.BytesIO(data_bytes), mimetype="text/plain")
+    created = service.files().create(
+        body=metadata, media_body=media, fields="id, webViewLink"
+    ).execute()
     return created
