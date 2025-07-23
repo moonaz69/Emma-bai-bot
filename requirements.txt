@@ -1,6 +1,6 @@
 python-telegram-bot==20.0a6
 APScheduler
-openai
+openai==0.28.0
 pytz
 google-api-python-client
 google-auth-httplib2
